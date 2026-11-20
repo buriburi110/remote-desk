@@ -49,6 +49,7 @@ python host.py
 
 `build.bat`을 실행하면 `dist\RemoteDeskHost.exe`가 만들어집니다.
 더블클릭하면 `%LOCALAPPDATA%\RemoteDesk`에 설치되고 로그인 시 자동 실행됩니다.
+exe 옆에 `config.json`이 있으면 함께 설치됩니다.
 해제는 `RemoteDeskHost.exe --uninstall`입니다.
 
 ## 보안

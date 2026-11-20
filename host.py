@@ -49,6 +49,9 @@ def install():
     if Path(sys.executable).resolve() != target.resolve():
         BASE.mkdir(parents=True, exist_ok=True)
         shutil.copy2(sys.executable, target)
+        bundled = Path(sys.executable).with_name("config.json")  # exe 옆에 둔 설정을 함께 설치
+        if bundled.exists():
+            shutil.copy2(bundled, BASE / "config.json")
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key, 0, winreg.KEY_SET_VALUE) as k:
             winreg.SetValueEx(k, "RemoteDesk", 0, winreg.REG_SZ, f'"{target}"')
         subprocess.Popen([str(target)])
@@ -261,7 +264,10 @@ async def main():
                     try:
                         async for m in ws:
                             if m.type == aiohttp.WSMsgType.TEXT:
-                                await ws.send_json(await handle_offer(json.loads(m.data)))
+                                try:
+                                    await ws.send_json(await handle_offer(json.loads(m.data)))
+                                except Exception as e:  # 잘못된 offer 하나로 호스트가 죽지 않게
+                                    print(f"offer 처리 실패: {e}")
                     finally:
                         ping.cancel()
             except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:

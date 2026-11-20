@@ -2,5 +2,6 @@ password.txt
 config.json
 dist/
 build/
+.build-venv/
 *.spec
 __pycache__/
