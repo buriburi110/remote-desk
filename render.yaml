@@ -1,0 +1,11 @@
+# Render 배포 설정: 시그널링 서버만 올린다 (host.py는 Windows PC에서 실행)
+services:
+  - type: web
+    name: remote-desk-signal
+    runtime: python
+    plan: free
+    buildCommand: pip install aiohttp
+    startCommand: python signal_server.py
+    envVars:
+      - key: HOST_KEY
+        generateValue: true

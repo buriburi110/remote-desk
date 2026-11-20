@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Remote Desk</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; color: #ddd; font: 14px system-ui; }
+  body { display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  video { max-width: 100vw; max-height: 100vh; display: none; cursor: crosshair; }
+  form { display: flex; gap: 8px; }
+  input, button { font: inherit; padding: 8px 12px; }
+  #status { position: fixed; bottom: 8px; left: 8px; opacity: .6; }
+</style>
+</head>
+<body>
+<form id="login">
+  <input id="pw" type="password" placeholder="비밀번호" autofocus>
+  <button>접속</button>
+</form>
+<video id="screen" autoplay playsinline muted></video>
+<div id="status"></div>
+<script>
+const $ = id => document.getElementById(id);
+const video = $('screen'), status = t => $('status').textContent = t;
+let dc = null;
+const send = o => { if (dc && dc.readyState === 'open') dc.send(JSON.stringify(o)); };
+
+$('login').onsubmit = async e => {
+  e.preventDefault();
+  const password = $('pw').value;
+  $('login').style.display = 'none';
+  status('연결 중…');
+  try { await connect(password); } catch (err) { fail(err.message); }
+};
+
+function fail(msg) {
+  status(msg);
+  video.style.display = 'none';
+  $('login').style.display = '';
+}
+
+async function connect(password) {
+  const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+  pc.addTransceiver('video', { direction: 'recvonly' });
+  pc.ontrack = e => { video.srcObject = new MediaStream([e.track]); };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed') fail('연결 실패 (네트워크가 P2P를 막고 있을 수 있음)');
+    if (pc.connectionState === 'disconnected') status('연결 끊김');
+  };
+
+  dc = pc.createDataChannel('input');
+  dc.onopen = () => send({ t: 'auth', p: password });
+  dc.onmessage = e => {
+    if (e.data === 'ok') { status(''); video.style.display = 'block'; }
+    else { pc.close(); fail('비밀번호가 틀렸습니다'); }
+  };
+
+  await pc.setLocalDescription(await pc.createOffer());
+  // ICE 후보 수집이 끝난 뒤 한 번에 보낸다 (최대 3초 대기)
+  await new Promise(done => {
+    if (pc.iceGatheringState === 'complete') return done();
+    pc.onicegatheringstatechange = () => pc.iceGatheringState === 'complete' && done();
+    setTimeout(done, 3000);
+  });
+  const res = await fetch('/offer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(pc.localDescription),
+  });
+  if (!res.ok) throw new Error(res.status === 503 ? '호스트 PC가 꺼져 있습니다' : '시그널링 오류 ' + res.status);
+  await pc.setRemoteDescription(await res.json());
+}
+
+// ---- 마우스
+const pos = e => {
+  const r = video.getBoundingClientRect();
+  return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+};
+video.onmousemove = e => send({ t: 'm', ...pos(e) });
+video.onmousedown = e => { e.preventDefault(); send({ t: 'b', b: e.button, down: true, ...pos(e) }); };
+video.onmouseup = e => send({ t: 'b', b: e.button, down: false, ...pos(e) });
+video.oncontextmenu = e => e.preventDefault();
+video.addEventListener('wheel', e => { e.preventDefault(); send({ t: 'w', dx: e.deltaX, dy: e.deltaY }); }, { passive: false });
+
+// ---- 키보드
+const down = new Set();
+const releaseAll = () => { down.forEach(c => send({ t: 'k', c, down: false })); down.clear(); };
+window.onkeydown = e => {
+  if (!dc || dc.readyState !== 'open' || video.style.display !== 'block') return;
+  e.preventDefault();
+  down.add(e.code);
+  send({ t: 'k', c: e.code, down: true });
+};
+window.onkeyup = e => {
+  if (!down.has(e.code)) return;
+  // macOS는 Cmd를 누른 동안 다른 키의 keyup을 보내지 않으므로 Cmd를 뗄 때 전부 뗀다
+  if (e.code.startsWith('Meta')) return releaseAll();
+  down.delete(e.code);
+  send({ t: 'k', c: e.code, down: false });
+};
+window.onblur = releaseAll;
+</script>
+</body>
+</html>

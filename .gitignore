@@ -1,0 +1,6 @@
+password.txt
+config.json
+dist/
+build/
+*.spec
+__pycache__/
