@@ -259,6 +259,12 @@ async def handle_offer(msg):
     @pc.on("connectionstatechange")
     async def on_state():
         print(f"연결 상태: {pc.connectionState} (ICE: {pc.iceConnectionState})")
+        if pc.connectionState == "connected":
+            try:  # 진단용: 실제로 선택된 경로 (aioice 내부 값이라 없으면 넘어간다)
+                pair = pc.sctp.transport.transport._connection._nominated[1]
+                print(f"선택된 경로: {pair.local_candidate.type} -> {pair.remote_candidate.type}")
+            except Exception:
+                pass
         if pc.connectionState in ("failed", "closed"):
             release_all(pressed)
             await pc.close()

@@ -50,7 +50,8 @@ async def ice(request):
 
 
 async def index(request):
-    return web.FileResponse(Path(__file__).with_name("client.html"))
+    # 브라우저가 예전 페이지를 캐시해서 쓰지 않게 한다
+    return web.FileResponse(Path(__file__).with_name("client.html"), headers={"Cache-Control": "no-store"})
 
 
 async def host(request):

@@ -51,15 +51,23 @@ async function connect(password) {
   const pc = new RTCPeerConnection({ iceServers });
   pc.addTransceiver('video', { direction: 'recvonly' });
   pc.ontrack = e => { video.srcObject = new MediaStream([e.track]); };
-  pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'failed') fail('연결 실패 (네트워크가 P2P를 막고 있을 수 있음)');
-    if (pc.connectionState === 'disconnected') status('연결 끊김');
+  let info = '';  // 진단용: 수집된 후보 종류와 선택된 경로
+  pc.onconnectionstatechange = async () => {
+    if (pc.connectionState === 'failed') fail('연결 실패 [' + info + ']');
+    if (pc.connectionState === 'disconnected') status('연결 끊김 [' + info + ']');
+    if (pc.connectionState === 'connected') {
+      const stats = [...(await pc.getStats()).values()];
+      const pair = stats.find(s => s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded');
+      const type = id => (stats.find(s => s.id === id) || {}).candidateType;
+      if (pair) info += ', 경로: ' + type(pair.localCandidateId) + ' ↔ ' + type(pair.remoteCandidateId);
+      status(info);
+    }
   };
 
   dc = pc.createDataChannel('input');
   dc.onopen = () => send({ t: 'auth', p: password });
   dc.onmessage = e => {
-    if (e.data === 'ok') { status(''); video.style.display = 'block'; }
+    if (e.data === 'ok') video.style.display = 'block';
     else { pc.close(); fail('비밀번호가 틀렸습니다'); }
   };
 
@@ -70,6 +78,8 @@ async function connect(password) {
     pc.onicegatheringstatechange = () => pc.iceGatheringState === 'complete' && done();
     setTimeout(done, 3000);
   });
+  info = '후보: ' + [...new Set((pc.localDescription.sdp.match(/typ \w+/g) || []).map(t => t.slice(4)))].join('/');
+  status('연결 중… [' + info + ']');
   const res = await fetch('/offer', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
