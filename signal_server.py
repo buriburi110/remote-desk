@@ -3,21 +3,50 @@
 
 실행: python signal_server.py
 환경변수: HOST_KEY (호스트 등록용 키, 기본 dev), PORT (기본 8765)
+          TURN_KEY_ID, TURN_API_TOKEN (선택: Cloudflare TURN 중계. 없으면 STUN만 쓴다)
 """
 import asyncio
 import hmac
 import json
 import os
+import re
 import uuid
 from pathlib import Path
 
-from aiohttp import WSMsgType, web
+from aiohttp import ClientSession, WSMsgType, web
 
 HOST_KEY = os.environ.get("HOST_KEY", "dev")
 PORT = int(os.environ.get("PORT", "8765"))
 
+# TURN 중계 (Cloudflare Realtime TURN). 둘 다 설정돼 있을 때만 쓴다
+TURN_KEY_ID = os.environ.get("TURN_KEY_ID")
+TURN_API_TOKEN = os.environ.get("TURN_API_TOKEN")
+STUN_ONLY = [{"urls": ["stun:stun.l.google.com:19302"]}]
+
 host_ws = None
 pending = {}  # 요청 id -> answer를 기다리는 Future
+ice_token = None  # 호스트가 등록한 값. 이 값을 아는 클라이언트에게만 TURN 자격증명을 준다
+
+
+async def ice(request):
+    """ICE 서버 목록. 호스트 키나 ice_token을 낸 쪽에만 TURN을 포함해 준다 (중계 트래픽 도용 방지)."""
+    is_host = hmac.compare_digest(request.headers.get("X-Host-Key", ""), HOST_KEY)
+    is_client = bool(ice_token) and hmac.compare_digest(request.headers.get("X-Ice-Token", ""), ice_token)
+    if not (TURN_KEY_ID and TURN_API_TOKEN and (is_host or is_client)):
+        return web.json_response(STUN_ONLY)
+    url = f"https://rtc.live.cloudflare.com/v1/turn/keys/{TURN_KEY_ID}/credentials/generate-ice-servers"
+    async with ClientSession() as http:
+        async with http.post(url, headers={"Authorization": f"Bearer {TURN_API_TOKEN}"}, json={"ttl": 86400}) as r:
+            if r.status >= 300:
+                print(f"TURN 자격증명 발급 실패: {r.status}")
+                return web.json_response(STUN_ONLY)
+            servers = (await r.json())["iceServers"]
+    if isinstance(servers, dict):
+        servers = [servers]
+    for s in servers:
+        urls = [s["urls"]] if isinstance(s["urls"], str) else s["urls"]
+        s["urls"] = [u for u in urls if not re.search(r":53(\?|$)", u)]  # 브라우저가 막는 53번 포트 제외
+    return web.json_response(servers)
 
 
 async def index(request):
@@ -25,7 +54,7 @@ async def index(request):
 
 
 async def host(request):
-    global host_ws
+    global host_ws, ice_token
     if not hmac.compare_digest(request.headers.get("X-Host-Key", ""), HOST_KEY):
         raise web.HTTPForbidden()
     ws = web.WebSocketResponse(heartbeat=30)
@@ -35,6 +64,8 @@ async def host(request):
     async for msg in ws:
         if msg.type == WSMsgType.TEXT:
             data = json.loads(msg.data)
+            if "ice_token" in data:
+                ice_token = data["ice_token"]
             fut = pending.pop(data.get("id"), None)  # id 없는 메시지는 호스트의 keepalive
             if fut and not fut.done():
                 fut.set_result(data)
@@ -60,7 +91,7 @@ async def offer(request):
 
 
 app = web.Application()
-app.add_routes([web.get("/", index), web.get("/host", host), web.post("/offer", offer)])
+app.add_routes([web.get("/", index), web.get("/host", host), web.post("/offer", offer), web.get("/ice", ice)])
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT)

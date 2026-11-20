@@ -9,3 +9,8 @@ services:
     envVars:
       - key: HOST_KEY
         generateValue: true
+      # 선택: Cloudflare TURN 중계 (직접 연결이 안 되는 네트워크용). 값은 대시보드에서 입력
+      - key: TURN_KEY_ID
+        sync: false
+      - key: TURN_API_TOKEN
+        sync: false

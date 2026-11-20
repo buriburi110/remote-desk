@@ -8,6 +8,7 @@ exe로 빌드(build.bat)하면 더블클릭으로 설치되고, RemoteDeskHost.e
 """
 import asyncio
 import ctypes
+import hashlib
 import hmac
 import json
 import os
@@ -205,13 +206,33 @@ class ScreenTrack(VideoStreamTrack):
 # ---------------------------------------------------------------- 연결
 
 current = None  # 세션은 하나만. 새 접속이 오면 이전 것을 끊는다
+http = None     # main()에서 만드는 aiohttp 세션
+ICE_URL = SIGNAL_URL.replace("ws", "http", 1).rsplit("/", 1)[0] + "/ice"
+# 클라이언트가 시그널링 서버에서 TURN 자격증명을 받을 때 내는 값 (비밀번호를 아는 쪽만 계산 가능)
+ICE_TOKEN = hashlib.sha256(("ice:" + PASSWORD).encode()).hexdigest()
+
+
+async def ice_servers():
+    """시그널링 서버가 주는 STUN/TURN 목록. 실패하면 STUN만 쓴다."""
+    try:
+        async with http.get(ICE_URL, headers={"X-Host-Key": HOST_KEY}) as r:
+            servers = await r.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        servers = [{"urls": [STUN]}]
+    out = []
+    for s in servers:
+        # aiortc가 안정적으로 쓰는 것만: STUN과 UDP TURN
+        urls = [u for u in s["urls"] if u.startswith("stun:") or (u.startswith("turn:") and "transport=tcp" not in u)]
+        if urls:
+            out.append(RTCIceServer(urls, s.get("username"), s.get("credential")))
+    return out
 
 
 async def handle_offer(msg):
     global current
     if current:
         await current.close()
-    pc = current = RTCPeerConnection(RTCConfiguration([RTCIceServer(STUN)]))
+    pc = current = RTCPeerConnection(RTCConfiguration(await ice_servers()))
     state = {"authed": False}
     pressed = set()
 
@@ -237,12 +258,17 @@ async def handle_offer(msg):
 
     @pc.on("connectionstatechange")
     async def on_state():
+        print(f"연결 상태: {pc.connectionState} (ICE: {pc.iceConnectionState})")
         if pc.connectionState in ("failed", "closed"):
             release_all(pressed)
             await pc.close()
 
     await pc.setRemoteDescription(RTCSessionDescription(msg["sdp"], msg["type"]))
     await pc.setLocalDescription(await pc.createAnswer())
+    # 연결 실패 원인 파악용: 양쪽 ICE 후보의 (종류, 주소, 프로토콜)
+    candidates = lambda sdp: [(p[7], p[4], p[2]) for p in (l.split() for l in sdp.splitlines() if l.startswith("a=candidate:"))]
+    print(f"클라이언트 후보: {candidates(msg['sdp'])}")
+    print(f"호스트 후보: {candidates(pc.localDescription.sdp)}")
     return {"id": msg["id"], "sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
 
 
@@ -254,12 +280,14 @@ async def keepalive(ws):
 
 
 async def main():
+    global http
     print(f"접속 비밀번호: {PW_FILE} 파일 참고")
     async with aiohttp.ClientSession() as http:
         while True:
             try:
                 async with http.ws_connect(SIGNAL_URL, headers={"X-Host-Key": HOST_KEY}, heartbeat=30) as ws:
                     print(f"시그널링 서버 연결됨: {SIGNAL_URL}")
+                    await ws.send_json({"ice_token": ICE_TOKEN})
                     ping = asyncio.create_task(keepalive(ws))
                     try:
                         async for m in ws:
